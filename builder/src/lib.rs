@@ -2,19 +2,31 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput};
 
-fn type_is_option(ty: &syn::Type) -> bool {
+fn generic_wraped_in_option(ty: &syn::Type) -> Option<&syn::GenericArgument> {
     if let syn::Type::Path(syn::TypePath {
         path: syn::Path { segments, .. },
         ..
     }) = ty
     {
-        if let Some(syn::PathSegment { ident, .. }) = segments.first() {
-            ident == "Option"
+        if let Some(syn::PathSegment { ident, arguments }) = segments.first() {
+            if ident != "Option" {
+                return None;
+            }
+
+            if let syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                args,
+                ..
+            }) = arguments
+            {
+                Some(args.first().unwrap())
+            } else {
+                None
+            }
         } else {
-            false
+            None
         }
     } else {
-        false
+        None
     }
 }
 
@@ -39,16 +51,30 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let fields_opt = fields.iter().map(|f| {
         let name = &f.ident;
         let ty = &f.ty;
-        quote! { #name: std::option::Option<#ty> }
+
+        if generic_wraped_in_option(ty).is_some() {
+            quote! { #name: #ty}
+        } else {
+            quote! { #name: std::option::Option<#ty> }
+        }
     });
 
     let methods = fields.iter().map(|f| {
         let name = &f.ident;
         let ty = &f.ty;
-        quote! {
-            pub fn #name(&mut self, #name: #ty) -> &mut Self {
-                self.#name = Some(#name);
-                self
+        if let Some(inner_ty) = generic_wraped_in_option(ty) {
+            quote! {
+                pub fn #name(&mut self, #name: #inner_ty) -> &mut Self {
+                    self.#name = Some(#name);
+                    self
+                }
+            }
+        } else {
+            quote! {
+                pub fn #name(&mut self, #name: #ty) -> &mut Self {
+                    self.#name = Some(#name);
+                    self
+                }
             }
         }
     });
@@ -56,7 +82,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let build_attrs = fields.iter().map(|f| {
         let name = &f.ident;
 
-        if type_is_option(&f.ty) {
+        if generic_wraped_in_option(&f.ty).is_some() {
             quote! {
                 #name: self.#name.clone()
             }
@@ -65,6 +91,11 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 #name: self.#name.clone().ok_or(concat!(stringify!(#name), " is not set"))?
             }
         }
+    });
+
+    let new_build_attrs = fields.iter().map(|f| {
+        let name = &f.ident;
+        quote! {#name: None}
     });
 
     let expanded = quote! {
@@ -87,10 +118,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         impl #name {
             pub fn builder() -> #bident {
                 #bident {
-                    executable: None,
-                    args: None,
-                    env: None,
-                    current_dir: None
+                    #(#new_build_attrs,)*
                 }
             }
         }
