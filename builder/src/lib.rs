@@ -2,14 +2,14 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput};
 
-fn generic_wraped_in_option(ty: &syn::Type) -> Option<&syn::GenericArgument> {
+fn inner_type<'a, 'b>(ty: &'a syn::Type, wrapper_type: &'b str) -> Option<&'a syn::Type> {
     if let syn::Type::Path(syn::TypePath {
         path: syn::Path { segments, .. },
         ..
     }) = ty
     {
         if let Some(syn::PathSegment { ident, arguments }) = segments.first() {
-            if ident != "Option" {
+            if ident != wrapper_type {
                 return None;
             }
 
@@ -18,7 +18,11 @@ fn generic_wraped_in_option(ty: &syn::Type) -> Option<&syn::GenericArgument> {
                 ..
             }) = arguments
             {
-                Some(args.first().unwrap())
+                if let syn::GenericArgument::Type(inner_ty) = args.first().unwrap() {
+                    Some(inner_ty)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -30,7 +34,25 @@ fn generic_wraped_in_option(ty: &syn::Type) -> Option<&syn::GenericArgument> {
     }
 }
 
-#[proc_macro_derive(Builder)]
+fn each_attribute_name_literal(attrs: Vec<syn::Attribute>) -> Option<syn::Ident> {
+    for attr in attrs.into_iter() {
+        if attr.path().is_ident("builder") {
+            if let syn::Meta::List(syn::MetaList { tokens, .. }) = attr.meta {
+                for t_tree in tokens.into_iter() {
+                    if let proc_macro2::TokenTree::Literal(literal) = t_tree {
+                        return Some(syn::Ident::new(
+                            literal.to_string().trim_matches('"'),
+                            proc_macro2::Span::call_site(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+#[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
 
@@ -52,7 +74,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let name = &f.ident;
         let ty = &f.ty;
 
-        if generic_wraped_in_option(ty).is_some() {
+        if inner_type(ty, "Option").is_some() {
             quote! { #name: #ty}
         } else {
             quote! { #name: std::option::Option<#ty> }
@@ -60,9 +82,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
     });
 
     let methods = fields.iter().map(|f| {
-        let name = &f.ident;
         let ty = &f.ty;
-        if let Some(inner_ty) = generic_wraped_in_option(ty) {
+        let name = &f.ident;
+
+        if let Some(inner_ty) = inner_type(ty, "Option") {
             quote! {
                 pub fn #name(&mut self, #name: #inner_ty) -> &mut Self {
                     self.#name = Some(#name);
@@ -70,10 +93,24 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 }
             }
         } else {
-            quote! {
-                pub fn #name(&mut self, #name: #ty) -> &mut Self {
-                    self.#name = Some(#name);
-                    self
+            if let Some(each_name) = each_attribute_name_literal(f.attrs.clone()) {
+                let inner_ty = inner_type(ty, "Vec").expect("Each attribute must be Vec<T>");
+                quote! {
+                        pub fn #each_name(&mut self, #each_name: #inner_ty) -> &mut Self {
+                            if let Some(ref mut v) = self.#name {
+                                v.push(#each_name);
+                            } else {
+                                self.#name = Some(vec![#each_name]);
+                            }
+                            self
+                        }
+                }
+            } else {
+                quote! {
+                    pub fn #name(&mut self, #name: #ty) -> &mut Self {
+                        self.#name = Some(#name);
+                        self
+                    }
                 }
             }
         }
@@ -82,13 +119,19 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let build_attrs = fields.iter().map(|f| {
         let name = &f.ident;
 
-        if generic_wraped_in_option(&f.ty).is_some() {
+        if inner_type(&f.ty, "Option").is_some() {
             quote! {
                 #name: self.#name.clone()
             }
         } else {
-            quote! {
-                #name: self.#name.clone().ok_or(concat!(stringify!(#name), " is not set"))?
+            if each_attribute_name_literal(f.attrs.clone()).is_some() {
+                quote! {
+                    #name: self.#name.clone().unwrap_or(vec![])
+                }
+            } else {
+                quote! {
+                    #name: self.#name.clone().ok_or(concat!(stringify!(#name), " is not set"))?
+                }
             }
         }
     });
