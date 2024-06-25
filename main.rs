@@ -5,21 +5,22 @@
 //
 // To run the code:
 //     $ cargo run
+use derive_debug::CustomDebug;
 
-use derive_builder::Builder;
-
-#[derive(Builder)]
-pub struct Command {
-    executable: String,
-    #[builder(each = "arg")]
-    args: Vec<String>,
-    #[builder(each = "env")]
-    env: Vec<String>,
-    current_dir: Option<String>,
+#[derive(CustomDebug)]
+pub struct Field {
+    name: &'static str,
+    #[debug = "0b{:08b}"]
+    bitmask: u8,
 }
 
 fn main() {
-    let builder = Command::builder();
+    let f = Field {
+        name: "F",
+        bitmask: 0b00011100,
+    };
 
-    let _ = builder;
+    // let debug = format!("{:?}", f);
+
+    // assert!(debug.starts_with(r#"Field { name: "F","#));
 }
