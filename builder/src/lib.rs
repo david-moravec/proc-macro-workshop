@@ -3,7 +3,10 @@ use quote::quote;
 use std::fmt;
 use syn::{parse_macro_input, DeriveInput, Error};
 
-fn inner_type<'a, 'b>(ty: &'a syn::Type, wrapper_type: &'b str) -> Option<&'a syn::Type> {
+fn inner_type<'a, 'b>(
+    ty: &'a syn::Type,
+    wrapper_type: &'b str,
+) -> std::option::Option<&'a syn::Type> {
     if let syn::Type::Path(syn::TypePath {
         path: syn::Path { segments, .. },
         ..
@@ -39,7 +42,9 @@ fn make_error<T: quote::ToTokens, U: fmt::Display>(tokens: T, message: U) -> syn
     Error::new_spanned(tokens, message)
 }
 
-fn each_attribute_name_literal(attrs: Vec<syn::Attribute>) -> Option<Result<syn::Ident, Error>> {
+fn each_attribute_name_literal(
+    attrs: Vec<syn::Attribute>,
+) -> std::option::Option<std::result::Result<syn::Ident, Error>> {
     for attr in attrs.into_iter() {
         if attr.path().is_ident("builder") {
             if let syn::Meta::List(syn::MetaList { ref tokens, .. }) = attr.meta {
@@ -124,7 +129,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         if let Some(inner_ty) = inner_type(ty, "Option") {
             quote! {
                 pub fn #name(&mut self, #name: #inner_ty) -> &mut Self {
-                    self.#name = Some(#name);
+                    self.#name = std::option::Option::Some(#name);
                     self
                 }
             }
@@ -138,7 +143,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                                     if let Some(ref mut v) = self.#name {
                                         v.push(#each_name);
                                     } else {
-                                        self.#name = Some(vec![#each_name]);
+                                        self.#name = std::option::Option::Some(vec![#each_name]);
                                     }
                                     self
                                 }
@@ -149,7 +154,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             } else {
                 quote! {
                     pub fn #name(&mut self, #name: #ty) -> &mut Self {
-                        self.#name = Some(#name);
+                        self.#name = std::option::Option::Some(#name);
                         self
                     }
                 }
@@ -190,7 +195,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         impl #bident {
             #(#methods)*
 
-            pub fn build(&mut self) -> Result<#name, Box<dyn std::error::Error>> {
+            pub fn build(&mut self) -> std::result::Result<#name, std::boxed::Box<dyn std::error::Error>> {
                 Ok(
                     #name {
                         #(#build_attrs,)*
