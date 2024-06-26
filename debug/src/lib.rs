@@ -1,5 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
+use std::collections::HashSet;
 use syn::{parse_macro_input, parse_quote, DeriveInput, GenericParam, Generics};
 
 fn specified_format(f: &syn::Field) -> Option<Result<String, syn::Error>> {
@@ -18,10 +19,15 @@ fn make_error<T: quote::ToTokens>(tokens: T) -> syn::Error {
     syn::Error::new_spanned(tokens, "Expected `debug = ...`")
 }
 
-fn add_trait_bounds(mut generics: Generics) -> Generics {
+fn add_trait_bounds(
+    mut generics: Generics,
+    type_idents_to_extend: HashSet<&syn::Ident>,
+) -> Generics {
     for param in &mut generics.params {
         if let GenericParam::Type(ref mut type_param) = *param {
-            type_param.bounds.push(parse_quote!(std::fmt::Debug))
+            if type_idents_to_extend.contains(&type_param.ident) {
+                type_param.bounds.push(parse_quote!(std::fmt::Debug))
+            }
         }
     }
 
@@ -55,10 +61,27 @@ fn attribute_format(attr: &syn::Attribute) -> Option<std::result::Result<String,
     }
 }
 
+fn ident_not_wrapped_in_phantom_data(ty: &syn::Type) -> Option<&syn::Ident> {
+    if let syn::Type::Path(syn::TypePath {
+        path: syn::Path { ref segments, .. },
+        ..
+    }) = ty
+    {
+        for segment in segments.iter() {
+            if segment.ident == "PhantomData" {
+                return None;
+            };
+
+            return Some(&segment.ident);
+        }
+    }
+
+    None
+}
+
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
-    // eprintln!("{:#?}", ast);
     let name = ast.ident;
     let named = if let syn::Data::Struct(syn::DataStruct {
         fields: syn::Fields::Named(syn::FieldsNamed { ref named, .. }),
@@ -89,7 +112,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     });
 
-    let generics = add_trait_bounds(ast.generics);
+    let type_idents_not_in_phantom_data = HashSet::from_iter(
+        named
+            .iter()
+            .filter_map(|f| ident_not_wrapped_in_phantom_data(&f.ty)),
+    );
+
+    let generics = add_trait_bounds(ast.generics, type_idents_not_in_phantom_data);
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let expanded = quote! {
