@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput};
+use syn::{parse_macro_input, parse_quote, DeriveInput, GenericParam, Generics};
 
 fn specified_format(f: &syn::Field) -> Option<Result<String, syn::Error>> {
     let attrs = &f.attrs;
@@ -16,6 +16,16 @@ fn specified_format(f: &syn::Field) -> Option<Result<String, syn::Error>> {
 
 fn make_error<T: quote::ToTokens>(tokens: T) -> syn::Error {
     syn::Error::new_spanned(tokens, "Expected `debug = ...`")
+}
+
+fn add_trait_bounds(mut generics: Generics) -> Generics {
+    for param in &mut generics.params {
+        if let GenericParam::Type(ref mut type_param) = *param {
+            type_param.bounds.push(parse_quote!(std::fmt::Debug))
+        }
+    }
+
+    generics
 }
 
 fn attribute_format(attr: &syn::Attribute) -> Option<std::result::Result<String, syn::Error>> {
@@ -48,6 +58,7 @@ fn attribute_format(attr: &syn::Attribute) -> Option<std::result::Result<String,
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
+    // eprintln!("{:#?}", ast);
     let name = ast.ident;
     let named = if let syn::Data::Struct(syn::DataStruct {
         fields: syn::Fields::Named(syn::FieldsNamed { ref named, .. }),
@@ -78,8 +89,11 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     });
 
+    let generics = add_trait_bounds(ast.generics);
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
     let expanded = quote! {
-        impl std::fmt::Debug for #name {
+        impl #impl_generics std::fmt::Debug for #name #ty_generics #where_clause {
             fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 fmt.debug_struct(stringify!(#name))
                     #(#fields_debug)*
