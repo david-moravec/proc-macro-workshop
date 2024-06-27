@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use std::collections::HashSet;
-use syn::{parse_macro_input, parse_quote, DeriveInput, GenericParam, Generics};
+use std::{collections::HashSet, hash::RandomState};
+use syn::{parse_macro_input, parse_quote, DeriveInput, GenericArgument, GenericParam, Generics};
 
 fn specified_format(f: &syn::Field) -> Option<Result<String, syn::Error>> {
     let attrs = &f.attrs;
@@ -25,7 +25,7 @@ fn add_trait_bounds(
 ) -> Generics {
     for param in &mut generics.params {
         if let GenericParam::Type(ref mut type_param) = *param {
-            if type_idents_to_extend.contains(&type_param.ident) {
+            if type_idents_to_extend.contains(&&type_param.ident) {
                 type_param.bounds.push(parse_quote!(std::fmt::Debug))
             }
         }
@@ -61,18 +61,28 @@ fn attribute_format(attr: &syn::Attribute) -> Option<std::result::Result<String,
     }
 }
 
-fn ident_not_wrapped_in_phantom_data(ty: &syn::Type) -> Option<&syn::Ident> {
+fn ident_wrapped_in_phantom_data(ty: &syn::Type) -> Option<syn::Ident> {
     if let syn::Type::Path(syn::TypePath {
         path: syn::Path { ref segments, .. },
         ..
     }) = ty
     {
         for segment in segments.iter() {
-            if segment.ident == "PhantomData" {
+            if segment.ident != "PhantomData" {
                 return None;
             };
 
-            return Some(&segment.ident);
+            if let syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                ref args,
+                ..
+            }) = segment.arguments
+            {
+                if let GenericArgument::Type(syn::Type::Path(syn::TypePath { ref path, .. })) =
+                    args.first().unwrap()
+                {
+                    return Some(path.get_ident().unwrap().clone());
+                }
+            }
         }
     }
 
@@ -112,15 +122,29 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     });
 
-    let type_idents_not_in_phantom_data = HashSet::from_iter(
+    let idents_wrapped_in_phantom_data: HashSet<syn::Ident, RandomState> = HashSet::from_iter(
         named
             .iter()
-            .filter_map(|f| ident_not_wrapped_in_phantom_data(&f.ty)),
+            .filter_map(|f| ident_wrapped_in_phantom_data(&f.ty)),
     );
 
-    let generics = add_trait_bounds(ast.generics, type_idents_not_in_phantom_data);
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let generic_idents =
+        HashSet::from_iter(ast.generics.params.clone().into_iter().filter_map(|p| {
+            if let GenericParam::Type(syn::TypeParam { ident, .. }) = p {
+                Some(ident.clone())
+            } else {
+                None
+            }
+        }));
 
+    let difference = generic_idents
+        .difference(&idents_wrapped_in_phantom_data)
+        .into_iter()
+        .collect();
+
+    let generics = add_trait_bounds(ast.generics, difference);
+
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     let expanded = quote! {
         impl #impl_generics std::fmt::Debug for #name #ty_generics #where_clause {
             fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
