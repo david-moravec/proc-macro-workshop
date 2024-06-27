@@ -1,7 +1,10 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use std::{collections::HashSet, hash::RandomState};
-use syn::{parse_macro_input, parse_quote, DeriveInput, GenericArgument, GenericParam, Generics};
+use std::collections::{hash_map::RandomState, HashMap, HashSet};
+use syn::{
+    parse_macro_input, parse_quote, punctuated::Punctuated, DeriveInput, GenericArgument,
+    GenericParam, Generics, PathArguments, Token,
+};
 
 fn specified_format(f: &syn::Field) -> Option<Result<String, syn::Error>> {
     let attrs = &f.attrs;
@@ -22,13 +25,30 @@ fn make_error<T: quote::ToTokens>(tokens: T) -> syn::Error {
 fn add_trait_bounds(
     mut generics: Generics,
     type_idents_to_extend: HashSet<&syn::Ident>,
+    mut generic_ident_to_path: HashMap<syn::Ident, syn::Path>,
 ) -> Generics {
+    let mut predicate: Option<syn::WherePredicate> = None;
+
     for param in &mut generics.params {
         if let GenericParam::Type(ref mut type_param) = *param {
             if type_idents_to_extend.contains(&&type_param.ident) {
-                type_param.bounds.push(parse_quote!(std::fmt::Debug))
+                if let Some(path) = generic_ident_to_path.remove(&type_param.ident) {
+                    predicate = Some(syn::WherePredicate::Type(syn::PredicateType {
+                        lifetimes: None,
+                        bounded_ty: syn::Type::Path(syn::TypePath { qself: None, path }),
+                        colon_token: Token![:](type_param.ident.span()),
+                        bounds: parse_quote!(std::fmt::Debug),
+                    }));
+                } else {
+                    type_param.bounds.push(parse_quote!(std::fmt::Debug));
+                }
             }
         }
+    }
+
+    if let Some(predicate) = predicate {
+        let clause = generics.make_where_clause();
+        clause.predicates.push(predicate);
     }
 
     generics
@@ -89,6 +109,44 @@ fn ident_wrapped_in_phantom_data(ty: &syn::Type) -> Option<syn::Ident> {
     None
 }
 
+fn get_associated_type_ident(
+    segments: &Punctuated<syn::PathSegment, syn::token::PathSep>,
+    generic_idents: &HashSet<syn::Ident>,
+) -> Option<(syn::Ident, syn::Path)> {
+    if segments.len() == 1 {
+        match segments.first().unwrap().arguments {
+            PathArguments::AngleBracketed(ref angle_args) => {
+                for arg in angle_args.args.iter() {
+                    if let syn::GenericArgument::Type(syn::Type::Path(syn::TypePath {
+                        ref path,
+                        ..
+                    })) = arg
+                    {
+                        let ident = get_associated_type_ident(&path.segments, generic_idents);
+
+                        if ident.is_some() {
+                            return ident;
+                        }
+                    }
+                }
+            }
+            _ => return None,
+        }
+    } else if segments.len() == 2 {
+        if generic_idents.contains(&segments.first().unwrap().ident) {
+            return Some((
+                segments.first().unwrap().ident.clone(),
+                syn::Path {
+                    leading_colon: None,
+                    segments: segments.clone(),
+                },
+            ));
+        }
+    };
+
+    None
+}
+
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
@@ -142,7 +200,23 @@ pub fn derive(input: TokenStream) -> TokenStream {
         .into_iter()
         .collect();
 
-    let generics = add_trait_bounds(ast.generics, difference);
+    let associated_paths = named.iter().filter_map(|f| {
+        if let syn::Type::Path(syn::TypePath {
+            path: syn::Path { ref segments, .. },
+            ..
+        }) = &f.ty
+        {
+            get_associated_type_ident(segments, &generic_idents)
+        } else {
+            None
+        }
+    });
+
+    let generics = add_trait_bounds(
+        ast.generics,
+        difference,
+        HashMap::from_iter(associated_paths),
+    );
 
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     let expanded = quote! {
