@@ -1,9 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use std::{
-    collections::{HashMap, HashSet},
-    hash::RandomState,
-};
+use std::collections::{hash_map::RandomState, HashMap, HashSet};
 use syn::{
     parse_macro_input, parse_quote, punctuated::Punctuated, DeriveInput, GenericArgument,
     GenericParam, Generics, PathArguments, Token,
@@ -30,24 +27,28 @@ fn add_trait_bounds(
     type_idents_to_extend: HashSet<&syn::Ident>,
     mut generic_ident_to_path: HashMap<syn::Ident, syn::Path>,
 ) -> Generics {
+    let mut predicate: Option<syn::WherePredicate> = None;
+
     for param in &mut generics.params {
         if let GenericParam::Type(ref mut type_param) = *param {
             if type_idents_to_extend.contains(&&type_param.ident) {
                 if let Some(path) = generic_ident_to_path.remove(&type_param.ident) {
-                    let predicate = syn::WherePredicate::Type(syn::PredicateType {
+                    predicate = Some(syn::WherePredicate::Type(syn::PredicateType {
                         lifetimes: None,
                         bounded_ty: syn::Type::Path(syn::TypePath { qself: None, path }),
                         colon_token: Token![:](type_param.ident.span()),
                         bounds: parse_quote!(std::fmt::Debug),
-                    });
-
-                    let where_clause = generics.make_where_clause();
-                    where_clause.predicates.push(predicate);
+                    }));
                 } else {
                     type_param.bounds.push(parse_quote!(std::fmt::Debug));
                 }
             }
         }
+    }
+
+    if let Some(predicate) = predicate {
+        let clause = generics.make_where_clause();
+        clause.predicates.push(predicate);
     }
 
     generics
