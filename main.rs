@@ -14,20 +14,24 @@ pub trait Trait {
 }
 
 #[derive(CustomDebug)]
-pub struct Field<T: Trait> {
+#[debug(bound = "T::Value: Debug")]
+pub struct Wrapper<T: Trait> {
+    field: Field<T>,
+}
+
+#[derive(CustomDebug)]
+struct Field<T: Trait> {
     values: Vec<T::Value>,
-    a: Vec<u8>,
 }
 
 fn assert_debug<F: Debug>() {}
 
 fn main() {
-    // Does not implement Debug, but its associated type does.
     struct Id;
 
     impl Trait for Id {
         type Value = u8;
     }
 
-    assert_debug::<Field<Id>>();
+    assert_debug::<Wrapper<Id>>();
 }

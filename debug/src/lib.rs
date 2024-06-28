@@ -1,45 +1,33 @@
 use proc_macro::TokenStream;
+use proc_macro2::TokenTree;
 use quote::quote;
 use std::collections::{hash_map::RandomState, HashMap, HashSet};
 use syn::{
     parse_macro_input, parse_quote, punctuated::Punctuated, DeriveInput, GenericArgument,
-    GenericParam, Generics, PathArguments, Token,
+    GenericParam, Generics, PathArguments, Token, WherePredicate,
 };
-
-fn specified_format(f: &syn::Field) -> Option<Result<String, syn::Error>> {
-    let attrs = &f.attrs;
-
-    for attr in attrs.iter() {
-        if attribute_format(attr).is_some() {
-            return attribute_format(attr);
-        }
-    }
-
-    None
-}
 
 fn make_error<T: quote::ToTokens>(tokens: T) -> syn::Error {
     syn::Error::new_spanned(tokens, "Expected `debug = ...`")
 }
 
+fn make_error_bound<T: quote::ToTokens>(tokens: T) -> syn::Error {
+    syn::Error::new_spanned(tokens, "Expected `debug(bound = ...)`")
+}
+
 fn add_trait_bounds(
     mut generics: Generics,
     type_idents_to_extend: HashSet<&syn::Ident>,
-    mut generic_ident_to_path: HashMap<syn::Ident, syn::Path>,
+    mut ident_to_bounded_ty: HashMap<syn::Ident, syn::WherePredicate>,
 ) -> Generics {
     let mut predicate: Option<syn::WherePredicate> = None;
 
     for param in &mut generics.params {
         if let GenericParam::Type(ref mut type_param) = *param {
             if type_idents_to_extend.contains(&&type_param.ident) {
-                if let Some(path) = generic_ident_to_path.remove(&type_param.ident) {
-                    predicate = Some(syn::WherePredicate::Type(syn::PredicateType {
-                        lifetimes: None,
-                        bounded_ty: syn::Type::Path(syn::TypePath { qself: None, path }),
-                        colon_token: Token![:](type_param.ident.span()),
-                        bounds: parse_quote!(std::fmt::Debug),
-                    }));
-                } else {
+                predicate = ident_to_bounded_ty.remove(&type_param.ident);
+
+                if predicate.is_none() {
                     type_param.bounds.push(parse_quote!(std::fmt::Debug));
                 }
             }
@@ -52,6 +40,18 @@ fn add_trait_bounds(
     }
 
     generics
+}
+
+fn specified_format(f: &syn::Field) -> Option<Result<String, syn::Error>> {
+    let attrs = &f.attrs;
+
+    for attr in attrs.iter() {
+        if attribute_format(attr).is_some() {
+            return attribute_format(attr);
+        }
+    }
+
+    None
 }
 
 fn attribute_format(attr: &syn::Attribute) -> Option<std::result::Result<String, syn::Error>> {
@@ -109,10 +109,56 @@ fn ident_wrapped_in_phantom_data(ty: &syn::Type) -> Option<syn::Ident> {
     None
 }
 
+fn get_bounded_types_from_attrs(
+    attrs: &Vec<syn::Attribute>,
+) -> Result<HashMap<syn::Ident, WherePredicate>, syn::Error> {
+    let mut result = HashMap::new();
+
+    for attr in attrs.iter() {
+        if let syn::Meta::List(ref meta_list) = attr.meta {
+            if !meta_list.path.is_ident("debug") {
+                return Err(make_error_bound(meta_list));
+            }
+
+            let mut t_iter = meta_list.tokens.clone().into_iter();
+
+            if let TokenTree::Ident(ident) = t_iter.next().unwrap() {
+                if ident.to_string() != "bound" {
+                    return Err(make_error_bound(ident));
+                }
+            } else {
+                return Err(make_error_bound(meta_list));
+            }
+
+            if let TokenTree::Punct(punct) = t_iter.next().unwrap() {
+                if punct.as_char() != '=' {
+                    return Err(make_error_bound(punct));
+                }
+            } else {
+                return Err(make_error_bound(meta_list));
+            }
+
+            if let TokenTree::Literal(lit) = t_iter.next().unwrap() {
+                let ident = syn::Ident::new("T", lit.span());
+                let predicate = syn::parse_str::<WherePredicate>(&format!(
+                    "{}",
+                    &lit.to_string().trim_matches('"')
+                ))?;
+
+                result.insert(ident, predicate);
+            } else {
+                return Err(make_error_bound(meta_list));
+            }
+        }
+    }
+
+    Ok(result)
+}
+
 fn get_associated_type_ident(
     segments: &Punctuated<syn::PathSegment, syn::token::PathSep>,
     generic_idents: &HashSet<syn::Ident>,
-) -> Option<(syn::Ident, syn::Path)> {
+) -> Option<(syn::Ident, syn::WherePredicate)> {
     if segments.len() == 1 {
         match segments.first().unwrap().arguments {
             PathArguments::AngleBracketed(ref angle_args) => {
@@ -133,13 +179,24 @@ fn get_associated_type_ident(
             _ => return None,
         }
     } else if segments.len() == 2 {
-        if generic_idents.contains(&segments.first().unwrap().ident) {
+        let seg_ident: syn::Ident = segments.first().unwrap().ident.clone();
+
+        if generic_idents.contains(&seg_ident) {
             return Some((
-                segments.first().unwrap().ident.clone(),
-                syn::Path {
-                    leading_colon: None,
-                    segments: segments.clone(),
-                },
+                seg_ident.clone(),
+                syn::WherePredicate::Type(syn::PredicateType {
+                    lifetimes: None,
+                    bounded_ty: syn::Type::Path(syn::TypePath {
+                        qself: None,
+                        path: syn::Path {
+                            leading_colon: None,
+                            segments: segments.clone(),
+                        },
+                    }),
+
+                    colon_token: Token![:](seg_ident.span()),
+                    bounds: parse_quote!(std::fmt::Debug),
+                }),
             ));
         }
     };
@@ -159,6 +216,11 @@ pub fn derive(input: TokenStream) -> TokenStream {
         named
     } else {
         unimplemented!("LOL")
+    };
+
+    let bounded_types_from_attrs = match get_bounded_types_from_attrs(&ast.attrs) {
+        Ok(t) => t,
+        Err(err) => return err.to_compile_error().into(),
     };
 
     let fields_debug = named.iter().map(|f| {
@@ -215,7 +277,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let generics = add_trait_bounds(
         ast.generics,
         difference,
-        HashMap::from_iter(associated_paths),
+        HashMap::<syn::Ident, WherePredicate>::from_iter(associated_paths)
+            .into_iter()
+            .chain(bounded_types_from_attrs)
+            .collect(),
     );
 
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
