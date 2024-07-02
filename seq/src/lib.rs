@@ -42,6 +42,10 @@ fn replace_param_with_value(
     let mut tokens = Vec::from_iter(body);
 
     for i in 0..tokens.len() {
+        if i == tokens.len() {
+            break;
+        };
+
         match tokens[i] {
             TokenTree::Ident(ref ident) => {
                 if ident == param {
@@ -56,11 +60,27 @@ fn replace_param_with_value(
                 replaced.set_span(group.span());
                 tokens[i] = replaced;
             }
+            TokenTree::Punct(ref punct) => {
+                if punct.as_char() == '~' {
+                    if tokens[i + 1].to_string() == param.to_string() {
+                        let prev = tokens[i - 1].to_string();
+                        let new_ident_str = format!("{}{}", prev, value);
+                        tokens[i - 1] =
+                            TokenTree::Ident(proc_macro2::Ident::new(&new_ident_str, punct.span()));
+                        tokens.remove(i + 1);
+                        tokens.remove(i);
+                    }
+                }
+            }
             _ => (),
         }
     }
 
-    Ok(proc_macro2::TokenStream::from_iter(tokens))
+    let result = Ok(proc_macro2::TokenStream::from_iter(tokens));
+
+    // eprintln!("{:#?}", result.as_ref().unwrap());
+
+    result
 }
 
 #[proc_macro]
