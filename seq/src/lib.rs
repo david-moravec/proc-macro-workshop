@@ -34,71 +34,85 @@ impl Parse for SeqMacroInput {
     }
 }
 
-fn replace_param_with_value(
-    param: &Ident,
-    value: u64,
-    body: proc_macro2::TokenStream,
-) -> Result<proc_macro2::TokenStream> {
-    let mut tokens = Vec::from_iter(body);
+impl SeqMacroInput {
+    fn expand_over_range(self) -> proc_macro2::TokenStream {
+        let mut result = proc_macro2::TokenStream::new();
 
-    for i in 0..tokens.len() {
-        if i == tokens.len() {
-            break;
-        };
+        for i in self.from..self.to {
+            result.extend(self.expand_once(self.body.clone(), i))
+        }
 
-        match tokens[i] {
-            TokenTree::Ident(ref ident) => {
-                if ident == param {
-                    tokens[i] = TokenTree::Literal(proc_macro2::Literal::u64_unsuffixed(value));
-                };
-            }
+        result
+    }
+
+    fn expand_once(
+        &self,
+        stream: proc_macro2::TokenStream,
+        value: u64,
+    ) -> proc_macro2::TokenStream {
+        let mut result = proc_macro2::TokenStream::new();
+        let mut stream_iter = stream.into_iter();
+
+        while let Some(tt) = stream_iter.next() {
+            result.extend(self.expand2(value, tt, &mut stream_iter))
+        }
+
+        result
+    }
+
+    fn expand2(
+        &self,
+        value: u64,
+        token_tree: proc_macro2::TokenTree,
+        rest: &mut proc_macro2::token_stream::IntoIter,
+    ) -> proc_macro2::TokenStream {
+        let token_tree = match token_tree {
             TokenTree::Group(ref group) => {
                 let mut replaced = TokenTree::Group(proc_macro2::Group::new(
                     group.delimiter(),
-                    replace_param_with_value(param, value, group.stream())?,
+                    self.expand_once(group.stream(), value),
                 ));
                 replaced.set_span(group.span());
-                tokens[i] = replaced;
+                replaced
             }
-            TokenTree::Punct(ref punct) => {
-                if punct.as_char() == '~' {
-                    if tokens[i + 1].to_string() == param.to_string() {
-                        let prev = tokens[i - 1].to_string();
-                        let new_ident_str = format!("{}{}", prev, value);
-                        tokens[i - 1] =
-                            TokenTree::Ident(proc_macro2::Ident::new(&new_ident_str, punct.span()));
-                        tokens.remove(i + 1);
-                        tokens.remove(i);
+            TokenTree::Ident(ref ident) if ident == &self.param => {
+                TokenTree::Literal(proc_macro2::Literal::u64_unsuffixed(value))
+            }
+            TokenTree::Ident(mut ident) => {
+                let mut peek = rest.clone();
+
+                match (peek.next(), peek.next()) {
+                    (Some(TokenTree::Punct(ref punct)), Some(TokenTree::Ident(ref ident2))) => {
+                        if punct.as_char() == '~' && ident2 == &self.param {
+                            ident = proc_macro2::Ident::new(
+                                &format!("{}{}", ident.to_string(), value),
+                                ident.span(),
+                            );
+                            *rest = peek.clone();
+                        }
                     }
-                }
+                    _ => {}
+                };
+
+                TokenTree::Ident(ident)
             }
-            _ => (),
-        }
+            tt => tt,
+        };
+
+        std::iter::once(token_tree).collect()
     }
+}
 
-    let result = Ok(proc_macro2::TokenStream::from_iter(tokens));
-
-    // eprintln!("{:#?}", result.as_ref().unwrap());
-
-    result
+impl Into<proc_macro2::TokenStream> for SeqMacroInput {
+    fn into(self) -> proc_macro2::TokenStream {
+        self.expand_over_range()
+    }
 }
 
 #[proc_macro]
 pub fn seq(input: TokenStream) -> TokenStream {
-    let SeqMacroInput {
-        param,
-        from,
-        to,
-        body,
-    } = parse_macro_input!(input as SeqMacroInput);
+    let input = parse_macro_input!(input as SeqMacroInput);
+    let output: proc_macro2::TokenStream = input.into();
 
-    let expanded =
-        (from..to).map(
-            |val| match replace_param_with_value(&param, val, body.clone()) {
-                Ok(replaced) => replaced,
-                Err(err) => err.to_compile_error(),
-            },
-        );
-
-    proc_macro2::TokenStream::from_iter(expanded).into()
+    output.into()
 }
