@@ -1,5 +1,6 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenTree;
+use std::ops::Range;
 use syn::parse::{Parse, ParseStream};
 use syn::{parse_macro_input, Ident, LitInt, Result, Token};
 
@@ -7,6 +8,7 @@ struct SeqMacroInput {
     param: Ident,
     from: u64,
     to: u64,
+    is_inclusive: bool,
     body: proc_macro2::TokenStream,
 }
 
@@ -23,6 +25,9 @@ impl Parse for SeqMacroInput {
         let lit: LitInt = input.parse()?;
         let from = lit.base10_parse::<u64>()?;
         input.parse::<Token![..]>()?;
+
+        let is_inclusive = input.parse::<Token![=]>().is_ok();
+
         let lit: LitInt = input.parse()?;
         let to = lit.base10_parse::<u64>()?;
         let body: TokenTree = input.parse()?;
@@ -32,6 +37,7 @@ impl Parse for SeqMacroInput {
                 param,
                 from,
                 to,
+                is_inclusive,
                 body: group.stream(),
             })
         } else {
@@ -57,6 +63,14 @@ impl SeqMacroInput {
         self.expand_over_range(out.clone(), &mut inner_expanded)
     }
 
+    fn range(&self) -> Range<u64> {
+        if self.is_inclusive {
+            self.from..(self.to + 1)
+        } else {
+            self.from..self.to
+        }
+    }
+
     fn expand_over_range(
         &self,
         to_expand: proc_macro2::TokenStream,
@@ -64,7 +78,7 @@ impl SeqMacroInput {
     ) -> proc_macro2::TokenStream {
         let mut result = proc_macro2::TokenStream::new();
 
-        for i in self.from..self.to {
+        for i in self.range() {
             result.extend(self.expand_once(
                 to_expand.clone(),
                 inner_expanded,
