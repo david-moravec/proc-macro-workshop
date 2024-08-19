@@ -1,7 +1,11 @@
-use seq::seq;
+use sorted::sorted;
 
-seq!(N in 0..1 {
-    fn main() {
-        let _ = Missing~N;
-    }
-});
+#[sorted]
+pub enum Error {
+    ThatFailed,
+    ThisFailed,
+    SomethingFailed,
+    WhoKnowsWhatFailed,
+}
+
+fn main() {}
