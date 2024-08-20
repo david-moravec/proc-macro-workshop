@@ -52,9 +52,12 @@ pub fn sorted(args: TokenStream, input: TokenStream) -> TokenStream {
     let _ = args;
     let item = parse_macro_input!(input as syn::Item);
 
+    let mut tt = quote! {#item};
+
     match check_order(&item) {
-        Ok(()) => quote! {#item},
-        Err(err) => err.into_compile_error(),
-    }
-    .into()
+        Ok(()) => {}
+        Err(err) => tt.extend(err.into_compile_error()),
+    };
+
+    tt.into()
 }
