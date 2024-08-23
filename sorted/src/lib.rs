@@ -1,7 +1,61 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
-use syn::{parse_macro_input, punctuated::Punctuated, token::Comma, Ident, Item, Variant};
+use syn::visit_mut::{self, VisitMut};
+use syn::ItemFn;
+use syn::{
+    parse_macro_input, punctuated::Punctuated, token::Comma, Arm, ExprMatch, Ident, Item, Meta,
+    Variant,
+};
+
+struct StripSorted {
+    error: Option<syn::Error>,
+}
+
+impl VisitMut for StripSorted {
+    fn visit_expr_match_mut(&mut self, node: &mut ExprMatch) {
+        let mut indices_to_remove: Vec<usize> = vec![];
+
+        for (i, attr) in node.attrs.iter().enumerate() {
+            if let Meta::Path(syn::Path { ref segments, .. }) = attr.meta {
+                match segments.first() {
+                    Some(seg) => {
+                        if seg.ident == "sorted" {
+                            indices_to_remove.push(i);
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        for i in indices_to_remove.into_iter() {
+            node.attrs.remove(i);
+        }
+
+        match check_expr_match_sorted(&node.arms) {
+            Ok(()) => {}
+            Err(err) => self.error = Some(err),
+        }
+        visit_mut::visit_expr_match_mut(self, node);
+    }
+}
+
+fn check_expr_match_sorted(arms: &Vec<Arm>) -> Result<(), syn::Error> {
+    let mut idents: Vec<&Ident> = vec![];
+
+    for arm in arms {
+        if let syn::Arm {
+            pat: syn::Pat::TupleStruct(syn::PatTupleStruct { path, .. }),
+            ..
+        } = arm
+        {
+            idents.push(path.get_ident().unwrap())
+        }
+    }
+
+    check_idents_order(idents)
+}
 
 fn check_order(item: &Item) -> Result<(), syn::Error> {
     if let Item::Enum(syn::ItemEnum { variants, .. }) = item {
@@ -14,9 +68,7 @@ fn check_order(item: &Item) -> Result<(), syn::Error> {
     }
 }
 
-fn check_variants_order(variants: &Punctuated<Variant, Comma>) -> Result<(), syn::Error> {
-    let vec_idents: Vec<&Ident> = variants.iter().map(|v| &v.ident).collect();
-
+fn check_idents_order(vec_idents: Vec<&Ident>) -> Result<(), syn::Error> {
     for i in 0..vec_idents.len() - 1 {
         let current = vec_idents[i];
         let next = vec_idents[i + 1];
@@ -47,16 +99,37 @@ fn check_variants_order(variants: &Punctuated<Variant, Comma>) -> Result<(), syn
     Ok(())
 }
 
+fn check_variants_order(variants: &Punctuated<Variant, Comma>) -> Result<(), syn::Error> {
+    let vec_idents: Vec<&Ident> = variants.iter().map(|v| &v.ident).collect();
+    check_idents_order(vec_idents)
+}
+
 #[proc_macro_attribute]
 pub fn sorted(args: TokenStream, input: TokenStream) -> TokenStream {
     let _ = args;
     let item = parse_macro_input!(input as syn::Item);
-
     let mut tt = quote! {#item};
 
     match check_order(&item) {
         Ok(()) => {}
         Err(err) => tt.extend(err.into_compile_error()),
+    };
+
+    tt.into()
+}
+#[proc_macro_attribute]
+pub fn check(args: TokenStream, input: TokenStream) -> TokenStream {
+    let _ = args;
+    let mut item = parse_macro_input!(input as ItemFn);
+
+    let mut strip_sorted = StripSorted { error: None };
+    strip_sorted.visit_item_fn_mut(&mut item);
+
+    let mut tt = quote! {#item};
+
+    match strip_sorted.error {
+        Some(err) => tt.extend(err.to_compile_error()),
+        None => {}
     };
 
     tt.into()
