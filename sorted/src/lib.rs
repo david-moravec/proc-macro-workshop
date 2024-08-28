@@ -1,11 +1,12 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
-use quote::quote;
+use quote::{quote, ToTokens};
+use std::cmp::Ordering;
 use syn::visit_mut::{self, VisitMut};
 use syn::ItemFn;
 use syn::{
     parse_macro_input, punctuated::Punctuated, token::Comma, Arm, ExprMatch, Ident, Item, Meta,
-    Variant,
+    Path, Variant,
 };
 
 struct StripSorted {
@@ -42,7 +43,7 @@ impl VisitMut for StripSorted {
 }
 
 fn check_expr_match_sorted(arms: &Vec<Arm>) -> Result<(), syn::Error> {
-    let mut idents: Vec<&Ident> = vec![];
+    let mut idents: Vec<&Path> = vec![];
 
     for arm in arms {
         if let syn::Arm {
@@ -50,11 +51,11 @@ fn check_expr_match_sorted(arms: &Vec<Arm>) -> Result<(), syn::Error> {
             ..
         } = arm
         {
-            idents.push(path.get_ident().unwrap())
+            idents.push(path)
         }
     }
 
-    check_idents_order(idents)
+    check_arms_order(idents)
 }
 
 fn check_order(item: &Item) -> Result<(), syn::Error> {
@@ -97,6 +98,62 @@ fn check_idents_order(vec_idents: Vec<&Ident>) -> Result<(), syn::Error> {
     }
 
     Ok(())
+}
+
+fn format_path(path: &Path) -> String {
+    let split: Vec<String> = path
+        .to_token_stream()
+        .to_string()
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+
+    split.join("")
+}
+
+fn check_arms_order(vec_path: Vec<&Path>) -> Result<(), syn::Error> {
+    for i in 0..vec_path.len() - 1 {
+        let current = vec_path[i];
+        let next = vec_path[i + 1];
+
+        if compare_paths_lexographicaly(current, next) == Ordering::Greater {
+            let mut vec_idents_sorted: Vec<&Path> = vec_path.clone();
+            vec_idents_sorted.sort_by(|v1, v2| compare_paths_lexographicaly(v1, v2));
+
+            let index = vec_idents_sorted
+                .iter()
+                .position(|n| n == &next)
+                .expect(&format!("Ident {:?} not in {:?}", next, vec_idents_sorted));
+
+            let correct_follower = &vec_idents_sorted[index + 1 as usize];
+
+            return Err(syn::Error::new_spanned(
+                next,
+                format!(
+                    "{} should sort before {}",
+                    format_path(next),
+                    format_path(correct_follower),
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn compare_paths_lexographicaly(a: &Path, b: &Path) -> Ordering {
+    for (segment_a, segment_b) in a.segments.iter().zip(b.segments.iter()) {
+        let ident_a = segment_a.ident.to_string().to_lowercase();
+        let ident_b = segment_b.ident.to_string().to_lowercase();
+
+        if ident_a == ident_b {
+            continue;
+        } else {
+            return ident_a.cmp(&ident_b);
+        }
+    }
+
+    Ordering::Equal
 }
 
 fn check_variants_order(variants: &Punctuated<Variant, Comma>) -> Result<(), syn::Error> {
